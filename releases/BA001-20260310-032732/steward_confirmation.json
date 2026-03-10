@@ -1,9 +1,13 @@
 {
+  "confirmed": true,
+  "status": "CONFIRMED",
   "signer_label": "Primary Steward Key",
   "key_fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
-  "allowed_signer_status": "active",
-  "touch_required": true,
   "signature_algorithm": "ed25519-piv",
+  "signed_payload_sha256": "fc2af70cc14a687032f67a226c3da4db0e2626587517a6ab4648ce04ad8c5eea",
+  "confirmed_at": "2026-03-10T03:51:26.360582Z",
+  "signature_encoding": "base64",
+  "steward_signature": "43rs5xbITaYIa+rhrZJhr0sQDbp1YZUxXhsTFd7UpcPoqvN/Q7YDmJJ9zxjGWun9TBqJo00bmguIMdEyMRbmAQ==",
   "signed_payload": {
     "schema": "bridge_arch_steward_confirmation_v1",
     "session_id": "BA001-20260310-032732",
@@ -13,13 +17,5 @@
     "outcome": "APPROVED",
     "binding_outcome": "APPROVED AS AMENDED",
     "approval_scope": "Ratification of AGD-163A-v3 as the operational governance framework, subject to a binding, immediately actionable 'Amendment Debt' agenda."
-  },
-  "signed_payload_sha256": "fc2af70cc14a687032f67a226c3da4db0e2626587517a6ab4648ce04ad8c5eea",
-  "confirmed_at": "2026-03-10T03:51:26.360582Z",
-  "signature_encoding": "base64",
-  "steward_signature": "43rs5xbITaYIa+rhrZJhr0sQDbp1YZUxXhsTFd7UpcPoqvN/Q7YDmJJ9zxjGWun9TBqJo00bmguIMdEyMRbmAQ==",
-  "signer_command": "pkcs11-tool",
-  "cryptographically_verified": true,
-  "confirmed": true,
-  "status": "CONFIRMED"
+  }
 }
