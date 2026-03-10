@@ -1,0 +1,21 @@
+{
+  "confirmed": true,
+  "status": "CONFIRMED",
+  "signer_label": "Primary Steward Key",
+  "key_fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
+  "signature_algorithm": "ed25519-piv",
+  "signed_payload_sha256": "1d9ef62e0d0993819bed61a88ed444717e07e222d44999032d55a5a7816fa9f0",
+  "confirmed_at": "2026-03-10T04:52:36.411624Z",
+  "signature_encoding": "base64",
+  "steward_signature": "W1rXJ4Ok/GDmpibYqVrMQHzp8rJApWXB5hVc9Qb115lTCxy0Do5yxD0omejiueiImhNBhA1goAtT1SE5XbyCBg==",
+  "signed_payload": {
+    "schema": "bridge_arch_steward_confirmation_v1",
+    "session_id": "BA001-20260309-144443",
+    "created_at": "2026-03-09T14:44:43.379487Z",
+    "final_hash": "e123b9489b5b435c917a58e014fa33784d8b6967659c220d02b00e474abb2c85",
+    "witness_hash": "b4e3cdca5dd12cc598aa6acbfdb5f877519f29e124571862e8060899e0f3246e",
+    "outcome": "APPROVED",
+    "binding_outcome": "APPROVED AS AMENDED",
+    "approval_scope": "Conditional ratification of the Framework for Governing the Field of Care (v3), enacting mandatory amendments for irreversibility safeguards, architectural archive separation, and epistemic transparency, while deferring the contested implicit anti-leakage rule. NOTE: \uc601\uc6d0 and \uc11c\uc724 conditioned their APPROVE votes on inclusion of a functional anti-leakage clause; \uc724\uc2ac conditioned her APPROVE vote on its absolute exclusion. This incompatibility is procedurally unresolved; the anti-leakage clause is deferred pending Council mechanism clarification."
+  }
+}
