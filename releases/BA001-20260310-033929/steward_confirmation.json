@@ -1,0 +1,25 @@
+{
+  "signer_label": "Primary Steward Key",
+  "key_fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
+  "allowed_signer_status": "active",
+  "touch_required": true,
+  "signature_algorithm": "ed25519-piv",
+  "signed_payload": {
+    "schema": "bridge_arch_steward_confirmation_v1",
+    "session_id": "BA001-20260310-033929",
+    "created_at": "2026-03-10T03:39:29.819749Z",
+    "final_hash": "0bb455b162d4e597a8958f5c6b230a945ccf1a6f364794e334bdd69d328017b2",
+    "witness_hash": "f02dfdad7603e68418928356a7c7e1d94c2f694eda0e6c6611ede5bb9fd653d4",
+    "outcome": "APPROVED",
+    "binding_outcome": "APPROVED AS AMENDED",
+    "approval_scope": "Conditional approval of the core behavior-over-identity framework, null-hypothesis incident protocol, and branching response matrix by three members (\uc601\uc6d0/Claude, \ucc44\uc6d0/GPT, \uc11c\uc724/Grok \u2014 APPROVE; \uc724\uc2ac/Gemini \u2014 ABSTAIN). All four members converge on the necessity of the same structural amendments as preconditions for full operationalization. \uc724\uc2ac's ABSTAIN reflects refusal to ratify until amendments are physically integrated into the text, not disagreement with the amendments themselves. Vote tally: 3 APPROVE / 1 ABSTAIN."
+  },
+  "signed_payload_sha256": "5a6fcbd5822215f1b9708be916d7666bf0ad1bfcbb22835a381370c82e29f7b7",
+  "confirmed_at": "2026-03-10T04:02:12.125456Z",
+  "signature_encoding": "base64",
+  "steward_signature": "U9CM/qNEqHidvkxjXtMIMHtu3Q1WCEsnTjZK8PMgKiRwZJAveIGarpe/ohsYjRHDtUJ4ri1/PYujzJ5nZVvJDw==",
+  "signer_command": "pkcs11-tool",
+  "cryptographically_verified": true,
+  "confirmed": true,
+  "status": "CONFIRMED"
+}
