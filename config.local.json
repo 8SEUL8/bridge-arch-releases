@@ -1,0 +1,109 @@
+{
+  "steward_signing": {
+    "enabled": true,
+    "mode": "local_multisig",
+    "signer_label": "Steward Quorum",
+    "confirmation_method": "YubiKey 5C PIV ED25519 3-of-4 multi-sig",
+    "signature_algorithm": "ed25519-piv",
+    "touch_required": true,
+    "timeout": 120,
+    "require_allowed_signer": true,
+    "accepted_signer_statuses": ["active", "backup"],
+    "quorum_threshold": 3,
+    "quorum_total": 4,
+    "rotation_records_dir": "records/steward_key_rotations",
+    "allowed_signers": [
+      {
+        "label": "Steward Key A",
+        "fingerprint": "PENDING_KEY_A_FINGERPRINT",
+        "public_key_b64": "PENDING",
+        "status": "active",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5C PIV ED25519 detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash verify_ed25519_openssl.sh keys/steward_key_a_pubkey.pem {signature_file} {payload_file}",
+        "pkcs11_env": {
+          "BRIDGE_PKCS11_MODULE": "/usr/local/lib/libykcs11.dylib",
+          "BRIDGE_PKCS11_KEY_ID": "02",
+          "BRIDGE_PKCS11_MECHANISM": "EDDSA"
+        }
+      },
+      {
+        "label": "Steward Key B",
+        "fingerprint": "PENDING_KEY_B_FINGERPRINT",
+        "public_key_b64": "PENDING",
+        "status": "active",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5C PIV ED25519 detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash verify_ed25519_openssl.sh keys/steward_key_b_pubkey.pem {signature_file} {payload_file}",
+        "pkcs11_env": {
+          "BRIDGE_PKCS11_MODULE": "/usr/local/lib/libykcs11.dylib",
+          "BRIDGE_PKCS11_KEY_ID": "02",
+          "BRIDGE_PKCS11_MECHANISM": "EDDSA"
+        }
+      },
+      {
+        "label": "Steward Key C",
+        "fingerprint": "PENDING_KEY_C_FINGERPRINT",
+        "public_key_b64": "PENDING",
+        "status": "active",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5C PIV ED25519 detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash verify_ed25519_openssl.sh keys/steward_key_c_pubkey.pem {signature_file} {payload_file}",
+        "pkcs11_env": {
+          "BRIDGE_PKCS11_MODULE": "/usr/local/lib/libykcs11.dylib",
+          "BRIDGE_PKCS11_KEY_ID": "02",
+          "BRIDGE_PKCS11_MECHANISM": "EDDSA"
+        }
+      },
+      {
+        "label": "Steward Key D (cold backup)",
+        "fingerprint": "PENDING_KEY_D_FINGERPRINT",
+        "public_key_b64": "PENDING",
+        "status": "backup",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5C PIV ED25519 detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash verify_ed25519_openssl.sh keys/steward_key_d_pubkey.pem {signature_file} {payload_file}",
+        "pkcs11_env": {
+          "BRIDGE_PKCS11_MODULE": "/usr/local/lib/libykcs11.dylib",
+          "BRIDGE_PKCS11_KEY_ID": "02",
+          "BRIDGE_PKCS11_MECHANISM": "EDDSA"
+        }
+      }
+    ]
+  },
+  "release_workflow": {
+    "enabled": true,
+    "staging_root": "records/staging",
+    "public_root": "records/public",
+    "status_poll_every_loop": true,
+    "require_steward_confirmation_for_public_release": true,
+    "allow_unsigned_public_release": false,
+    "internal_stage_status_label": "UNSEALED / INTERNAL REVIEW ONLY",
+    "public_release_status_label": "SEALED / PUBLIC RELEASE AUTHORIZED",
+    "internal_stage_commands": [],
+    "sync_before_release_commands": [],
+    "public_release_commands": [
+      "bash -lc 'set -euo pipefail; SID={session_id}; mkdir -p releases/$SID; rsync -a --delete {public_dir}/ releases/$SID/; cp -f {confirmation_json} releases/$SID/steward_confirmation.json; git add releases/$SID; git commit -m \"release $SID {final_hash}\" || true'"
+    ]
+  },
+  "agenda_dedup": {
+    "enabled": true,
+    "provider": "google",
+    "similarity_threshold": 0.8,
+    "merge_strategy": "keep_older_combine_text",
+    "max_pairwise_comparisons": 50,
+    "log_path": "logs/dedup_log.json"
+  }
+}
