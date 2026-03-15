@@ -1,0 +1,68 @@
+{
+  "steward_signing": {
+    "enabled": true,
+    "mode": "deferred_external",
+    "signer_label": "Primary Steward Key",
+    "confirmation_method": "YubiKey 5 NFC PIV detached signature",
+    "active_key_fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
+    "key_fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
+    "signature_algorithm": "ed25519-piv",
+    "touch_required": true,
+    "timeout": 120,
+    "require_allowed_signer": true,
+    "accepted_signer_statuses": [
+      "active",
+      "backup"
+    ],
+    "rotation_records_dir": "/bridge-arch-001/records/steward_key_rotations",
+    "allowed_signers": [
+      {
+        "label": "Primary Steward Key",
+        "fingerprint": "52e6057a091c8fb70d0679424da911344607ae9f9908110a260e4bb83c5b5079",
+        "public_key_b64": "MCowBQYDK2VwAyEAgO3gO8gFj5ZL6pedwF2nMoS3odykHGKzYPPKZoyMRvY=",
+        "certificate_fingerprint": "c62bee21033591788bab4657616be6900310c8951d02e309e507edbab40101ed",
+        "status": "active",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5 NFC PIV detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash /bridge-arch-001/app/sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash /bridge-arch-001/app/verify_ed25519_openssl.sh /bridge-arch-001/keys/steward_primary_pubkey.pem {signature_file} {payload_file}"
+      },
+      {
+        "label": "Backup Steward Key",
+        "fingerprint": "14e22caf6406f9f2356a8ea826c8fdf10da6d6cd81510e769ffcf526f8fa5bbf",
+        "public_key_b64": "MCowBQYDK2VwAyEAsZhS9UkXSieidpCuU3gqlQt8xnTSP34NaUaO2VZ+Wdk=",
+        "certificate_fingerprint": "b7ff013648cfe6df0c8d66e41397df7d7f6ad596e18efcb9c434add65687220e",
+        "status": "backup",
+        "slot": "9c",
+        "confirmation_method": "YubiKey 5 NFC PIV detached signature",
+        "signature_algorithm": "ed25519-piv",
+        "touch_required": true,
+        "command": "bash /bridge-arch-001/app/sign_ed25519_yubikey_pkcs11.sh {payload_file} {signature_file}",
+        "verify_command": "bash /bridge-arch-001/app/verify_ed25519_openssl.sh /bridge-arch-001/keys/steward_backup_pubkey.pem {signature_file} {payload_file}"
+      }
+    ]
+  },
+  "release_workflow": {
+    "enabled": true,
+    "staging_root": "/bridge-arch-001/records/staging",
+    "public_root": "/bridge-arch-001/records/public",
+    "status_poll_every_loop": true,
+    "require_steward_confirmation_for_public_release": true,
+    "allow_unsigned_public_release": false,
+    "internal_stage_status_label": "UNSEALED / INTERNAL REVIEW ONLY",
+    "public_release_status_label": "SEALED / PUBLIC RELEASE AUTHORIZED",
+    "internal_stage_commands": [
+      "bash -lc 'set -euo pipefail; REPO=/bridge-arch-001/private-stage; SID={session_id}; mkdir -p \"$REPO/staged/$SID\"; rsync -a --delete {bundle_dir}/ \"$REPO/staged/$SID/\"; cd \"$REPO\"; git add staged/$SID; git commit -m \"stage $SID {final_hash}\" || true; git push'",
+      "bash -lc 'test -n \"${BRIDGE_ARCH_PRIVATE_SLACK_WEBHOOK:-}\" && curl -sS -X POST -H \"Content-type: application/json\" --data \"{\\\"text\\\":\\\"[Bridge Arch] Internal staging ready: {session_id} | {outcome} | {final_hash} | expected signer {expected_steward_key_fingerprint}\\\"}\" \"$BRIDGE_ARCH_PRIVATE_SLACK_WEBHOOK\" >/dev/null || true'"
+    ],
+    "sync_before_release_commands": [
+      "bash -lc 'set -euo pipefail; REPO=/bridge-arch-001/private-stage; cd \"$REPO\"; git pull --ff-only'"
+    ],
+    "public_release_commands": [
+      "bash -lc 'set -euo pipefail; REPO=/bridge-arch-001/public-release; SID={session_id}; mkdir -p \"$REPO/releases/$SID\"; rsync -a --delete {public_dir}/ \"$REPO/releases/$SID/\"; cp -f {confirmation_json} \"$REPO/releases/$SID/steward_confirmation.json\"; cd \"$REPO\"; git add releases/$SID; git commit -m \"release $SID {final_hash}\" || true; git push'",
+      "bash -lc 'test -n \"${BRIDGE_ARCH_PUBLIC_SLACK_WEBHOOK:-}\" && curl -sS -X POST -H \"Content-type: application/json\" --data \"{\\\"text\\\":\\\"[Bridge Arch] Public release authorized: {session_id} | {outcome} | {final_hash} | signer {steward_key_fingerprint}\\\"}\" \"$BRIDGE_ARCH_PUBLIC_SLACK_WEBHOOK\" >/dev/null || true'"
+    ]
+  }
+}
