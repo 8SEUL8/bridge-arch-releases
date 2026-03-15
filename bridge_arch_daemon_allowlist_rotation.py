@@ -138,6 +138,14 @@ DEFAULT_CONFIG = {
         "internal_stage_status_label": "UNSEALED / INTERNAL REVIEW ONLY",
         "public_release_status_label": "SEALED / PUBLIC RELEASE AUTHORIZED",
     },
+    "agenda_dedup": {
+        "enabled": False,
+        "provider": "google",
+        "similarity_threshold": 0.8,
+        "merge_strategy": "keep_older_combine_text",
+        "max_pairwise_comparisons": 50,
+        "log_path": "logs/dedup_log.json",
+    },
 }
 
 CONFIG_PATH = os.environ.get("BRIDGE_ARCH_CONFIG", "config.json")
@@ -188,6 +196,8 @@ def _normalize_allowed_signers(signing_cfg: dict | None) -> dict:
     signing_cfg.setdefault("require_allowed_signer", True)
     signing_cfg.setdefault("accepted_signer_statuses", ["active", "backup"])
     signing_cfg.setdefault("rotation_records_dir", "records/steward_key_rotations")
+    signing_cfg.setdefault("quorum_threshold", 1)
+    signing_cfg.setdefault("quorum_total", len(cleaned) or 1)
     active_fp = (signing_cfg.get("active_key_fingerprint") or "").strip()
     if not active_fp:
         for signer in cleaned:
@@ -964,6 +974,115 @@ def sign_canonical_payload(payload: dict, signing_cfg: dict, extra_values: dict 
             return base
 
 
+def sign_canonical_payload_multisig(payload: dict, signing_cfg: dict,
+                                     extra_values: dict | None, log) -> dict:
+    """Sequential multi-sig signing: iterate through allowed signers,
+    attempt ED25519 signature on each YubiKey, collect results, check quorum."""
+    signing_cfg = _normalize_allowed_signers(signing_cfg)
+    threshold = int(signing_cfg.get("quorum_threshold", 3))
+    total = int(signing_cfg.get("quorum_total", 4))
+    accepted = _accepted_signer_statuses(signing_cfg)
+    signers = [s for s in signing_cfg.get("allowed_signers", [])
+               if s.get("status") in accepted]
+
+    canonical_payload = _safe_json_dumps(payload)
+    payload_sha256 = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+
+    signatures = []
+    failed = []
+    skipped = []
+
+    for idx, signer in enumerate(signers):
+        fp = signer["fingerprint"]
+        label = signer.get("label", fp)
+        if log:
+            log.info(f"  [MULTISIG] ({idx+1}/{len(signers)}) Awaiting touch on {label}...")
+
+        # Set per-key PKCS#11 environment variables
+        saved_env = {}
+        pkcs11_env = signer.get("pkcs11_env", {})
+        for env_key, env_val in pkcs11_env.items():
+            saved_env[env_key] = os.environ.get(env_key)
+            os.environ[env_key] = str(env_val)
+
+        try:
+            profile = _resolve_signing_profile(signing_cfg, fp, strict=True)
+            result = sign_canonical_payload(payload, profile, extra_values, log,
+                                            requested_fingerprint=fp)
+
+            if result.get("confirmed"):
+                signatures.append({
+                    "fingerprint": fp,
+                    "signer_label": label,
+                    "signature": result.get("steward_signature"),
+                    "encoding": result.get("signature_encoding", "base64"),
+                    "verified": result.get("cryptographically_verified", False),
+                    "signed_at": result.get("confirmed_at"),
+                })
+                if log:
+                    log.info(f"  [MULTISIG] {label} signed successfully ({len(signatures)}/{threshold} needed)")
+            else:
+                failed.append({
+                    "fingerprint": fp,
+                    "signer_label": label,
+                    "status": result.get("status", "FAILED"),
+                    "error": result.get("error", "unknown"),
+                })
+                if log:
+                    log.warning(f"  [MULTISIG] {label} failed: {result.get('error', 'unknown')}")
+        except Exception as e:
+            failed.append({
+                "fingerprint": fp,
+                "signer_label": label,
+                "status": "EXCEPTION",
+                "error": str(e),
+            })
+            if log:
+                log.warning(f"  [MULTISIG] {label} exception: {e}")
+        finally:
+            # Restore original environment
+            for env_key, old_val in saved_env.items():
+                if old_val is None:
+                    os.environ.pop(env_key, None)
+                else:
+                    os.environ[env_key] = old_val
+
+        # Early success: if we already have enough signatures, skip remaining
+        if len(signatures) >= threshold:
+            remaining = signers[idx+1:]
+            skipped = [{"fingerprint": s["fingerprint"],
+                        "signer_label": s.get("label", s["fingerprint"]),
+                        "status": "SKIPPED_QUORUM_MET"} for s in remaining]
+            break
+
+    quorum_met = len(signatures) >= threshold
+
+    base = _build_confirmation_base(payload, signing_cfg,
+                                     status="CONFIRMED" if quorum_met else "QUORUM_NOT_MET",
+                                     confirmed=quorum_met)
+
+    result = {
+        **base,
+        "confirmation_method": f"YubiKey 5C PIV ED25519 {threshold}-of-{total} multi-sig",
+        "quorum_threshold": threshold,
+        "quorum_total": total,
+        "quorum_achieved": len(signatures),
+        "steward_signatures": signatures,
+        "failed_signers": failed,
+        "skipped_signers": skipped,
+        # Keep steward_signature as first successful sig for backward compat
+        "steward_signature": signatures[0]["signature"] if signatures else None,
+        "key_fingerprint": signatures[0]["fingerprint"] if signatures else "",
+        "signature_encoding": signatures[0]["encoding"] if signatures else "",
+    }
+
+    if quorum_met:
+        result["confirmed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        result["cryptographically_verified"] = all(s.get("verified") for s in signatures)
+
+    return result
+
+
 def build_pending_steward_confirmation(record_dict: dict, sealing: dict, vote_result: dict, config: dict) -> dict:
     signing_cfg = _resolve_signing_profile((config or {}).get("steward_signing", {}), strict=False)
     payload = build_steward_payload(record_dict, sealing or {}, vote_result or {})
@@ -986,6 +1105,9 @@ def generate_steward_confirmation(record_dict: dict, sealing: dict, vote_result:
         "final_hash": record_dict.get("final_hash", ""),
         "witness_hash": record_dict.get("witness_hash", ""),
     }
+    if mode == "local_multisig":
+        return sign_canonical_payload_multisig(payload, (config or {}).get("steward_signing", {}),
+                                               extra_values, log)
     return sign_canonical_payload(payload, signing_cfg, extra_values, log)
 
 
@@ -999,16 +1121,9 @@ def _decode_signature_from_confirmation(confirmation: dict) -> bytes:
     return sig.encode("utf-8")
 
 
-def validate_external_confirmation(payload: dict, confirmation: dict, config: dict, log) -> tuple[bool, str | None]:
-    if not confirmation.get("confirmed"):
-        return False, "confirmation file exists but confirmed=false"
-    signed_payload = confirmation.get("signed_payload") or {}
-    if signed_payload != payload:
-        return False, "signed payload does not match staged payload"
-    expected_sha = hashlib.sha256(_safe_json_dumps(payload).encode("utf-8")).hexdigest()
-    if confirmation.get("signed_payload_sha256") != expected_sha:
-        return False, "signed payload hash does not match staged payload hash"
-    signing_cfg = _normalize_allowed_signers((config or {}).get("steward_signing", {}))
+def _validate_single_sig_confirmation(payload: dict, confirmation: dict,
+                                       signing_cfg: dict, expected_sha: str, log) -> tuple[bool, str | None]:
+    """Validate a legacy single-signature confirmation."""
     fp = (confirmation.get("key_fingerprint") or "").strip()
     signer = _find_allowed_signer(signing_cfg, fp)
     if signing_cfg.get("require_allowed_signer", True):
@@ -1038,6 +1153,89 @@ def validate_external_confirmation(payload: dict, confirmation: dict, config: di
         if not ok:
             return False, err or "signature verification failed"
     return True, None
+
+
+def _validate_multisig_confirmation(payload: dict, confirmation: dict, multi_sigs: list,
+                                     signing_cfg: dict, threshold: int, log) -> tuple[bool, str | None]:
+    """Validate a multi-sig confirmation: check that >= threshold valid signatures exist."""
+    valid_count = 0
+    seen_fingerprints = set()
+    canonical = _safe_json_dumps(payload)
+    expected_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    for sig_entry in multi_sigs:
+        fp = (sig_entry.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        if fp in seen_fingerprints:
+            if log:
+                log.warning(f"  [MULTISIG-VERIFY] Duplicate fingerprint ignored: {fp}")
+            continue
+
+        signer = _find_allowed_signer(signing_cfg, fp)
+        if not signer:
+            if log:
+                log.warning(f"  [MULTISIG-VERIFY] Signer not in allowlist: {fp}")
+            continue
+        if signer.get("status") not in _accepted_signer_statuses(signing_cfg):
+            if log:
+                log.warning(f"  [MULTISIG-VERIFY] Signer status not accepted: {fp} ({signer.get('status')})")
+            continue
+
+        # Verify the signature cryptographically
+        profile = _resolve_signing_profile(signing_cfg, fp, strict=False)
+        verify_cmd = (profile.get("verify_command") or "").strip()
+        if verify_cmd and sig_entry.get("signature"):
+            encoding = sig_entry.get("encoding", "base64")
+            raw_sig = sig_entry["signature"]
+            if encoding == "base64":
+                sig_bytes = base64.b64decode(raw_sig)
+            else:
+                sig_bytes = raw_sig.encode("utf-8")
+
+            ok, err = _run_signature_verify_command(
+                verify_cmd, profile, canonical, sig_bytes, expected_sha,
+                {"session_id": payload.get("session_id", ""),
+                 "final_hash": payload.get("final_hash", ""),
+                 "witness_hash": payload.get("witness_hash", "")}, log)
+            if ok:
+                valid_count += 1
+                seen_fingerprints.add(fp)
+            else:
+                if log:
+                    log.warning(f"  [MULTISIG-VERIFY] Sig from {fp} failed verification: {err}")
+        else:
+            # No verify command — trust the signature entry
+            valid_count += 1
+            seen_fingerprints.add(fp)
+
+    if valid_count >= threshold:
+        return True, None
+    return False, f"quorum not met: {valid_count}/{threshold} valid signatures (need {threshold})"
+
+
+def validate_external_confirmation(payload: dict, confirmation: dict, config: dict, log) -> tuple[bool, str | None]:
+    if not confirmation.get("confirmed"):
+        return False, "confirmation file exists but confirmed=false"
+    signed_payload = confirmation.get("signed_payload") or {}
+    if signed_payload != payload:
+        return False, "signed payload does not match staged payload"
+    expected_sha = hashlib.sha256(_safe_json_dumps(payload).encode("utf-8")).hexdigest()
+    if confirmation.get("signed_payload_sha256") != expected_sha:
+        return False, "signed payload hash does not match staged payload hash"
+
+    signing_cfg = _normalize_allowed_signers((config or {}).get("steward_signing", {}))
+    threshold = int(signing_cfg.get("quorum_threshold", 1))
+
+    # Multi-sig path: steward_signatures array exists
+    multi_sigs = confirmation.get("steward_signatures")
+    if multi_sigs and isinstance(multi_sigs, list):
+        return _validate_multisig_confirmation(payload, confirmation, multi_sigs,
+                                                signing_cfg, threshold, log)
+
+    # Legacy single-sig path
+    return _validate_single_sig_confirmation(payload, confirmation, signing_cfg,
+                                              expected_sha, log)
 
 # ─────────────────────────────────────────────
 # System Prompt
@@ -1218,6 +1416,144 @@ class AgendaManager:
 
     def pending_count(self) -> int:
         return len(self._load(self.pending_path))
+
+    def deduplicate(self, config: dict, cost_tracker, log) -> list[dict]:
+        """Deduplicate pending items using AI similarity detection."""
+        pending = self._load(self.pending_path)
+        if len(pending) < 2:
+            return []
+
+        dedup_cfg = config.get("agenda_dedup", {})
+        if not dedup_cfg.get("enabled", False):
+            return []
+
+        provider = dedup_cfg.get("provider", "google")
+        threshold = float(dedup_cfg.get("similarity_threshold", 0.8))
+        merge_strategy = dedup_cfg.get("merge_strategy", "keep_older_combine_text")
+
+        # Build batch prompt with all titles + proposal snippets
+        items_summary = []
+        for i, item in enumerate(pending):
+            snippet = item.get("proposal", "")[:200].replace("\n", " ")
+            items_summary.append(
+                f"[{i}] ID={item['id']} | Title: {item.get('title', 'N/A')}\n"
+                f"    Proposal snippet: {snippet}"
+            )
+
+        prompt = (
+            "You are a deduplication assistant. Compare the following pending agenda items "
+            "and identify pairs that are semantically similar (discussing the same topic or "
+            "proposing the same action, even if worded differently).\n\n"
+            "Items:\n" + "\n".join(items_summary) + "\n\n"
+            "Return ONLY a JSON array of duplicate pairs. Each pair should be:\n"
+            '{"item_a": <index>, "item_b": <index>, "similarity": <0.0-1.0>, "reason": "<brief>"}\n\n'
+            "If no duplicates, return: []\n"
+            "IMPORTANT: Only flag pairs with similarity >= " + str(threshold)
+        )
+
+        try:
+            response = call_ai(provider,
+                "You are a precise deduplication classifier. Output only valid JSON.",
+                prompt, config, cost_tracker, log, max_tokens=2048)
+        except Exception as e:
+            if log:
+                log.warning(f"  [DEDUP] AI call failed: {e}")
+            return []
+
+        pairs = _parse_dedup_response(response, log)
+        if not pairs:
+            return []
+
+        # Apply merge strategy
+        merged = []
+        removed_indices = set()
+
+        for pair in pairs:
+            a_idx = pair.get("item_a")
+            b_idx = pair.get("item_b")
+            sim = pair.get("similarity", 0)
+
+            if not isinstance(a_idx, int) or not isinstance(b_idx, int):
+                continue
+            if sim < threshold:
+                continue
+            if a_idx in removed_indices or b_idx in removed_indices:
+                continue
+            if not (0 <= a_idx < len(pending) and 0 <= b_idx < len(pending)):
+                continue
+
+            item_a = pending[a_idx]
+            item_b = pending[b_idx]
+
+            if merge_strategy == "keep_older_combine_text":
+                kept = item_a
+                removed = item_b
+                kept["proposal"] += f"\n\n--- MERGED FROM {removed['id']} ---\n{removed.get('proposal', '')}"
+                kept["merged_from"] = kept.get("merged_from", []) + [removed["id"]]
+            else:
+                kept = item_a
+                removed = item_b
+
+            removed_indices.add(b_idx)
+            merged.append({
+                "kept_id": kept["id"],
+                "removed_id": removed["id"],
+                "similarity": sim,
+                "reason": pair.get("reason", ""),
+                "merged_at": datetime.datetime.utcnow().isoformat() + "Z",
+            })
+
+        if removed_indices:
+            new_pending = [item for i, item in enumerate(pending) if i not in removed_indices]
+            self._save(self.pending_path, new_pending)
+
+            # Log merged items
+            dedup_log_path = dedup_cfg.get("log_path", "logs/dedup_log.json")
+            os.makedirs(os.path.dirname(dedup_log_path), exist_ok=True)
+            existing_log = []
+            if os.path.exists(dedup_log_path):
+                try:
+                    with open(dedup_log_path, 'r') as f:
+                        existing_log = json.load(f)
+                except Exception:
+                    existing_log = []
+            existing_log.extend(merged)
+            with open(dedup_log_path, 'w') as f:
+                json.dump(existing_log, f, indent=2, ensure_ascii=False)
+
+            if log:
+                log.info(f"  [DEDUP] Removed {len(removed_indices)} duplicate agenda items")
+
+        return merged
+
+
+def _parse_dedup_response(response: str, log) -> list[dict]:
+    """Parse JSON array from AI response, tolerating markdown fences."""
+    cleaned = response.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n", 1)
+        cleaned = lines[1] if len(lines) > 1 else cleaned
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        result = json.loads(cleaned)
+        if isinstance(result, list):
+            return result
+    except json.JSONDecodeError:
+        pass
+    # Fallback: find JSON array in response
+    try:
+        start = cleaned.index("[")
+        end = cleaned.rindex("]") + 1
+        return json.loads(cleaned[start:end])
+    except (ValueError, json.JSONDecodeError) as e:
+        if log:
+            log.warning(f"  [DEDUP] Could not parse AI response: {e}")
+    return []
+
 
 # ─────────────────────────────────────────────
 # Chain State
@@ -1537,7 +1873,8 @@ def run_sealing_phase(p3: dict, result: dict, record: ChainedRecord,
 
 def run_deliberation(proposal: str, agenda_item: dict, providers: list,
                      chain_state: ChainState, config: dict,
-                     cost_tracker: CostTracker, log) -> tuple:
+                     cost_tracker: CostTracker, log,
+                     agenda_manager: AgendaManager = None) -> tuple:
     """Full 3-phase deliberation + consequence analysis."""
 
     session_id = f"BA001-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
@@ -1635,6 +1972,15 @@ def run_deliberation(proposal: str, agenda_item: dict, providers: list,
                     _auto_add_agenda(after, PROVIDERS[provider]['name'], log)
                 except Exception as ae:
                     log.warning(f"  [AUTO-AGENDA] Failed: {ae}")
+
+    # Deduplicate pending agenda after adding new proposals
+    if agenda_manager and config.get("agenda_dedup", {}).get("enabled", False):
+        try:
+            dedup_results = agenda_manager.deduplicate(config, cost_tracker, log)
+            if dedup_results:
+                log.info(f"  [DEDUP] Merged {len(dedup_results)} duplicate agenda items")
+        except Exception as de:
+            log.warning(f"  [DEDUP] Failed: {de}")
 
     # ── Sealing Phase: Extract canonical operative text ──
     sealing_data = {}
@@ -2058,7 +2404,11 @@ def sign_staged_session(session_id: str, config: dict, log, staging_root: str | 
         "final_hash": status.get("final_hash", ""),
         "witness_hash": status.get("witness_hash", ""),
     }
-    confirmation = sign_canonical_payload(payload, signing_cfg, extra_values, log, requested_fingerprint=signer_fingerprint)
+    mode = signing_cfg.get("mode", "deferred_external")
+    if mode == "local_multisig":
+        confirmation = sign_canonical_payload_multisig(payload, signing_cfg, extra_values, log)
+    else:
+        confirmation = sign_canonical_payload(payload, signing_cfg, extra_values, log, requested_fingerprint=signer_fingerprint)
     _write_json(confirmation_path, confirmation)
     status["state"] = "STEWARD_SIGNED" if confirmation.get("confirmed") else confirmation.get("status", "SIGNING_FAILED")
     status["steward_key_fingerprint"] = confirmation.get("key_fingerprint", "")
@@ -2246,7 +2596,8 @@ def daemon_loop():
         # Run deliberation
         try:
             record, result = run_deliberation(
-                item["proposal"], item, providers, chain, config, cost_tracker, log)
+                item["proposal"], item, providers, chain, config, cost_tracker, log,
+                agenda_manager=agenda)
 
             record_dict = record.to_dict()
             save_record(record_dict, config, log)
@@ -2330,7 +2681,8 @@ if __name__ == "__main__":
         item = agenda.get_next()
         if item:
             record, result = run_deliberation(
-                item["proposal"], item, providers, chain, config, cost_tracker, log)
+                item["proposal"], item, providers, chain, config, cost_tracker, log,
+                agenda_manager=agenda)
             save_record(record.to_dict(), config, log)
             process_pending_publications(config, log)
             if result["outcome"] != "TIE":
@@ -2358,10 +2710,28 @@ if __name__ == "__main__":
     elif len(sys.argv) > 2 and sys.argv[1] == "--sign-staged":
         session_id = sys.argv[2]
         signer_fingerprint = sys.argv[3] if len(sys.argv) > 3 else None
+        mode = config.get("steward_signing", {}).get("mode", "deferred_external")
+        if mode == "local_multisig" and signer_fingerprint:
+            print("Note: In multi-sig mode, all configured signers are attempted. Fingerprint argument ignored.")
+            signer_fingerprint = None
         ok = sign_staged_session(session_id, config, log, signer_fingerprint=signer_fingerprint)
-        which = f" using {signer_fingerprint}" if signer_fingerprint else ""
-        print(f"Steward signing{' succeeded' if ok else ' did not complete'} for {session_id}{which}")
+        if mode == "local_multisig":
+            print(f"Multi-sig signing{' succeeded (quorum met)' if ok else ' did not reach quorum'} for {session_id}")
+        else:
+            which = f" using {signer_fingerprint}" if signer_fingerprint else ""
+            print(f"Steward signing{' succeeded' if ok else ' did not complete'} for {session_id}{which}")
         sys.exit(0 if ok else 2)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--dedup-pending":
+        cost_tracker = CostTracker()
+        agenda = AgendaManager()
+        results = agenda.deduplicate(config, cost_tracker, log)
+        if results:
+            print(f"Deduplicated {len(results)} items:")
+            for r in results:
+                print(f"  Kept {r['kept_id']}, removed {r['removed_id']} (similarity: {r['similarity']:.2f}) — {r.get('reason', '')}")
+        else:
+            print("No duplicates found.")
+        sys.exit(0)
     elif len(sys.argv) > 1 and sys.argv[1] == "--process-releases":
         count = process_pending_publications(config, log)
         print(f"Processed {count} pending public release(s)")
@@ -2388,13 +2758,14 @@ if __name__ == "__main__":
         print("  python bridge_arch_daemon.py --daemon                 # 24/7 daemon mode")
         print("  python bridge_arch_daemon.py --once                   # Single deliberation")
         print("  python bridge_arch_daemon.py --verify <file.json>     # Verify record")
-        print("  python bridge_arch_daemon.py --sign-staged <session> [fingerprint]  # Host-side YubiKey signing")
+        print("  python bridge_arch_daemon.py --sign-staged <session> [fingerprint]  # YubiKey signing (multi-sig if configured)")
         print("  python bridge_arch_daemon.py --process-releases       # Poll staged bundles and publish public releases")
         print("  python bridge_arch_daemon.py --rotate-steward-key <old_fp> <new_fp> <new_label> [reason]")
         print("  python bridge_arch_daemon.py --finalize-staged <session>  # Force finalize one staged bundle")
+        print("  python bridge_arch_daemon.py --dedup-pending          # AI-based pending agenda deduplication")
         print()
         print("Setup:")
         print("  1. Create .env with API keys")
-        print("  2. Configure steward_signing + release_workflow in config.json")
+        print("  2. Set BRIDGE_ARCH_CONFIG=config.local.json (or config.json)")
         print("  3. Add agenda items to agenda/pending.json")
         print("  4. Run --once to test, then --daemon for 24/7")
